@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src *; img-src 'self' data: https:; media-src 'self' https: data:;" />
+<title>Account Hub</title>
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+  <main class="app">
+
+    <section class="view active" id="view-dashboard">
+      <header class="view-header">
+        <div>
+          <h1>Übersicht</h1>
+          <p class="subtitle" id="last-check-label">Noch keine Prüfung durchgeführt</p>
+        </div>
+        <button class="btn-primary" id="btn-check-now">Prüfen</button>
+      </header>
+      <div class="grid" id="cards-grid"></div>
+    </section>
+
+    <section class="view" id="view-activity">
+      <header class="view-header">
+        <div>
+          <h1>Aktivität</h1>
+          <p class="subtitle">Nachrichten aus deinen verbundenen Bots</p>
+        </div>
+      </header>
+      <ul class="conversation-list" id="conversation-list">
+        <li class="empty">Noch keine Discord- oder Telegram-Karte verbunden.</li>
+      </ul>
+      <div class="other-events" id="other-events-wrap">
+        <h3>Weitere Ereignisse</h3>
+        <ul class="activity-list" id="activity-list"></ul>
+      </div>
+    </section>
+
+    <section class="view" id="view-games">
+      <header class="view-header">
+        <div>
+          <h1>Spiele</h1>
+          <p class="subtitle" id="games-last-check-label">Statistiken deiner Spiele-Accounts</p>
+        </div>
+        <button class="btn-primary" id="btn-games-refresh">Aktualisieren</button>
+      </header>
+      <div class="grid" id="games-grid"></div>
+    </section>
+
+    <section class="view" id="view-ai">
+      <header class="view-header">
+        <div>
+          <h1>KI</h1>
+          <p class="subtitle">Chat mit deinem eigenen OpenAI-Key</p>
+        </div>
+        <button class="btn-primary" id="btn-ai-clear">Verlauf löschen</button>
+      </header>
+      <div class="ai-chat">
+        <div class="thread-messages" id="ai-messages"></div>
+        <div class="thread-error" id="ai-error" style="display:none"></div>
+        <form class="thread-reply" id="ai-form">
+          <textarea id="ai-input" rows="1" placeholder="Nachricht an die KI…"></textarea>
+          <button type="submit" id="ai-send">Senden</button>
+        </form>
+      </div>
+    </section>
+
+    <section class="view" id="view-settings">
+      <header class="view-header">
+        <div>
+          <h1>Einstellungen</h1>
+          <p class="subtitle">Prüfintervall und Verhalten der App</p>
+        </div>
+      </header>
+
+      <div class="settings-card">
+        <div class="settings-row">
+          <div>
+            <h3>Prüfintervall</h3>
+            <p>Wie oft geprüft wird, während die App geöffnet ist.</p>
+          </div>
+          <select id="setting-interval">
+            <option value="30">Alle 30 Sekunden</option>
+            <option value="60">Jede Minute</option>
+            <option value="300">Alle 5 Minuten</option>
+            <option value="900">Alle 15 Minuten</option>
+          </select>
+        </div>
+        <div class="settings-row">
+          <div>
+            <h3>Hinweis zum Hintergrundbetrieb</h3>
+            <p>iOS pausiert JavaScript, sobald die App in den Hintergrund geht. Prüfungen und Benachrichtigungen funktionieren zuverlässig nur, während Account Hub geöffnet ist.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="settings-card" style="margin-top:14px">
+        <div class="settings-row" style="flex-direction:column; align-items:stretch; gap:10px;">
+          <div><h3>KI — OpenAI API-Key</h3><p>Wird nur lokal auf deinem Gerät gespeichert.</p></div>
+          <input type="text" id="setting-ai-key" placeholder="sk-..." />
+        </div>
+        <div class="settings-row" style="flex-direction:column; align-items:stretch; gap:10px;">
+          <div><h3>Modell</h3><p>Aktuelle Modellnamen findest du auf platform.openai.com/docs/models</p></div>
+          <input type="text" id="setting-ai-model" placeholder="z. B. gpt-4o-mini" />
+        </div>
+        <div class="settings-row" style="flex-direction:column; align-items:stretch; gap:10px;">
+          <div><h3>System-Prompt (optional)</h3><p>Grundinstruktion, die vor jeder Unterhaltung mitgeschickt wird.</p></div>
+          <input type="text" id="setting-ai-system" placeholder="z. B. Antworte kurz und auf Deutsch." />
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Vollbild-Unterhaltung -->
+  <div class="thread-overlay" id="thread-overlay">
+    <div class="thread-head">
+      <button class="thread-back" id="thread-back" aria-label="Zurück">&#8592;</button>
+      <div class="thread-head-meta">
+        <h3 id="thread-title"></h3>
+        <span class="timestamp" id="thread-subtitle"></span>
+      </div>
+    </div>
+    <div class="thread-messages" id="thread-messages"></div>
+    <div class="thread-error" id="thread-error" style="display:none"></div>
+    <form class="thread-reply" id="thread-reply">
+      <textarea id="reply-input" rows="1" placeholder="Nachricht als Bot schreiben…"></textarea>
+      <button type="submit" id="reply-send">Senden</button>
+    </form>
+  </div>
+
+  <!-- Vollbild Spiel-Details -->
+  <div class="thread-overlay" id="game-overlay">
+    <div class="thread-head">
+      <button class="thread-back" id="game-back" aria-label="Zurück">&#8592;</button>
+      <div class="thread-head-meta">
+        <h3 id="game-title"></h3>
+        <span class="timestamp" id="game-subtitle"></span>
+      </div>
+      <button class="thread-back" id="game-edit" aria-label="Bearbeiten" style="margin-left:auto">&#9998;</button>
+    </div>
+    <div class="thread-messages" id="game-stats"></div>
+    <div class="thread-error" id="game-error" style="display:none"></div>
+  </div>
+
+  <!-- Karte hinzufügen / bearbeiten -->
+  <div class="modal-backdrop" id="modal-backdrop">
+    <div class="modal" id="modal">
+      <div class="modal-head">
+        <h2 id="modal-title">Dienst verbinden</h2>
+        <button class="modal-close" id="modal-close">&#10005;</button>
+      </div>
+      <div class="modal-body" id="modal-body"></div>
+    </div>
+  </div>
+
+  <nav class="tabbar">
+    <button class="tab-item active" data-view="dashboard">
+      <span class="tab-ico">&#9679;</span><span>Übersicht</span>
+    </button>
+    <button class="tab-item" data-view="activity">
+      <span class="tab-ico">&#9776;</span><span>Aktivität</span>
+      <span class="tab-dot" id="tab-activity-dot"></span>
+    </button>
+    <button class="tab-item" data-view="games">
+      <span class="tab-ico">&#127918;</span><span>Spiele</span>
+    </button>
+    <button class="tab-item" data-view="ai">
+      <span class="tab-ico">&#10024;</span><span>KI</span>
+    </button>
+    <button class="tab-item" data-view="settings">
+      <span class="tab-ico">&#9881;</span><span>Einstellungen</span>
+    </button>
+  </nav>
+
+  <script src="app.js"></script>
+</body>
+</html>
