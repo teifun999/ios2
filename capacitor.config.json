@@ -1,8 +1,17 @@
 {
-  "appId": "com.local.accounthub",
-  "appName": "Account Hub",
-  "webDir": "www",
-  "ios": {
-    "contentInset": "always"
-  }
+	"appId": "com.local.accounthub",
+	"appName": "Account Hub",
+	"webDir": "www",
+	"ios": {
+		"contentInset": "always"
+	},
+	"plugins": {
+		"CapacitorHttp": {
+			"enabled": true
+		}
+	},
+	"packageClassList": [
+		"AppPlugin",
+		"LocalNotificationsPlugin"
+	]
 }
