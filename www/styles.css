@@ -518,12 +518,11 @@ select {
   font-size: 9.5px;
   padding: 6px 0;
   cursor: pointer;
-  transition: color 0.22s ease, transform 0.15s var(--ease);
+  transition: color 0.22s ease;
 }
-.tab-item:active { transform: scale(0.94); }
-.tab-ico { font-size: 14px; display: inline-block; transition: transform 0.22s var(--ease-out); }
+.tab-item:active { transform: none; opacity: 0.7; }
+.tab-ico { font-size: 14px; display: inline-block; }
 .tab-item.active { color: var(--accent); }
-.tab-item.active .tab-ico { transform: scale(1.12); }
 
 .tab-indicator {
   position: absolute;
@@ -535,6 +534,7 @@ select {
   transform: translateX(0);
   transition: transform 0.32s var(--ease-out), width 0.32s var(--ease-out);
   pointer-events: none;
+  z-index: -1;
 }
 .tab-dot {
   position: absolute;

@@ -337,9 +337,14 @@ const BrawlStars = {
     if (!tag) throw new Error('Spieler-Tag fehlt');
     if (!game.apiKey) throw new Error('API-Key fehlt');
     const base = BrawlStars.base(game.useProxy !== false);
-    const res = await fetch(`${base}/v1/players/%23${tag}`, {
-      headers: { Authorization: `Bearer ${game.apiKey}`, Accept: 'application/json' }
-    });
+    let res;
+    try {
+      res = await fetch(`${base}/v1/players/%23${tag}`, {
+        headers: { Authorization: `Bearer ${game.apiKey}`, Accept: 'application/json' }
+      });
+    } catch (networkErr) {
+      throw new Error('Verbindung fehlgeschlagen ("Load failed"). Das ist die offizielle Brawl-Stars-API, die kein CORS erlaubt — dafür muss die native HTTP-Bridge aktiv sein (capacitor.config.json → plugins.CapacitorHttp.enabled, dann "npx cap sync ios" + neu bauen).');
+    }
     if (!res.ok) {
       if (res.status === 403) throw new Error('API-Key ungültig oder IP nicht freigeschaltet (bei Proxy: 45.79.218.79 im Developer-Portal whitelisten)');
       if (res.status === 404) throw new Error('Spieler-Tag nicht gefunden');
@@ -368,40 +373,118 @@ const BrawlStars = {
 // API serverseitige Filter unterstützt (z. B. ?search= oder ?id=), kann das
 // hier ergänzt werden, um nicht jedes Mal die komplette Liste zu laden.
 const MagicBrawl = {
-  API_URL: 'https://api.shop.magicbrawl.gg/api/v1/players',
-  _cache: null,
-  _cacheAt: 0,
-  async fetchAllPlayers(force) {
-    if (!force && MagicBrawl._cache && Date.now() - MagicBrawl._cacheAt < 20000) return MagicBrawl._cache;
-    const res = await fetch(MagicBrawl.API_URL, { headers: { Accept: 'application/json' } });
-    if (!res.ok) throw new Error(`Magic Brawl antwortete mit ${res.status}`);
-    const data = await res.json();
-    const list = Array.isArray(data) ? data
-      : Array.isArray(data.players) ? data.players
-      : Array.isArray(data.data) ? data.data
-      : [];
-    MagicBrawl._cache = list;
-    MagicBrawl._cacheAt = Date.now();
+  BASE: 'https://api.shop.magicbrawl.gg/api/v1/players',
+  _workingTemplate: null, // welches Muster zuletzt funktioniert hat, z.B. 'search' | 'q' | 'path' | 'base'
+
+  // Der genaue Aufbau der API ist nicht öffentlich dokumentiert. Ein nackter
+  // GET auf /players lieferte bei dir einen 404 — vermutlich braucht der
+  // Endpunkt einen Such-Parameter oder ein anderes Pfad-Format. Wir probieren
+  // hier mehrere gängige Varianten durch und merken uns, welche funktioniert
+  // hat, damit spätere Aufrufe nicht jedes Mal neu raten müssen.
+  _templates(query) {
+    const enc = encodeURIComponent(String(query || '').trim().replace(/^#/, ''));
+    return {
+      search: `${MagicBrawl.BASE}?search=${enc}`,
+      query: `${MagicBrawl.BASE}?query=${enc}`,
+      q: `${MagicBrawl.BASE}?q=${enc}`,
+      name: `${MagicBrawl.BASE}?name=${enc}`,
+      id: `${MagicBrawl.BASE}?id=${enc}`,
+      path: `${MagicBrawl.BASE}/${enc}`,
+      searchpath: `${MagicBrawl.BASE}/search?q=${enc}`,
+      base: MagicBrawl.BASE,
+      baseslash: `${MagicBrawl.BASE}/`
+    };
+  },
+  _candidates(query) {
+    const t = MagicBrawl._templates(query);
+    const q = String(query || '').trim();
+    const order = q
+      ? [MagicBrawl._workingTemplate, 'search', 'query', 'q', 'name', 'id', 'path', 'searchpath', 'base', 'baseslash']
+      : [MagicBrawl._workingTemplate, 'base', 'baseslash'];
+    const seen = new Set();
+    const list = [];
+    for (const key of order) {
+      if (!key || !t[key] || seen.has(t[key])) continue;
+      seen.add(t[key]);
+      list.push({ key, url: t[key] });
+    }
     return list;
   },
+
+  async _fetchJson(url) {
+    let res;
+    try {
+      res = await fetch(url, { headers: { Accept: 'application/json' } });
+    } catch (networkErr) {
+      const err = new Error('Verbindung fehlgeschlagen (Netzwerk/CORS).');
+      err.kind = 'network';
+      throw err;
+    }
+    if (!res.ok) {
+      const err = new Error(`HTTP ${res.status}`);
+      err.status = res.status;
+      throw err;
+    }
+    try {
+      return await res.json();
+    } catch (e) {
+      const err = new Error('Antwort war kein gültiges JSON.');
+      err.kind = 'parse';
+      throw err;
+    }
+  },
+
+  _toList(data) {
+    if (Array.isArray(data)) return data;
+    if (data && Array.isArray(data.players)) return data.players;
+    if (data && Array.isArray(data.data)) return data.data;
+    if (data && Array.isArray(data.results)) return data.results;
+    if (data && typeof data === 'object' && (data.id ?? data.playerId ?? data._id) !== undefined) return [data];
+    return null;
+  },
+
+  // Probiert die Kandidaten-URLs für eine Suchanfrage durch und liefert die
+  // erste, die eine verwertbare Spielerliste zurückgibt.
+  async _search(query) {
+    const tried = [];
+    for (const { key, url } of MagicBrawl._candidates(query)) {
+      try {
+        const data = await MagicBrawl._fetchJson(url);
+        const list = MagicBrawl._toList(data);
+        if (list) {
+          MagicBrawl._workingTemplate = key;
+          return { list, url };
+        }
+        tried.push(`${url} → unerwartetes Antwortformat`);
+      } catch (err) {
+        tried.push(`${url} → ${err.status ? 'HTTP ' + err.status : (err.message || 'Fehler')}`);
+      }
+    }
+    const detail = tried.slice(0, 4).join(' · ');
+    throw new Error(`Magic-Brawl-API nicht erreichbar (probiert: ${detail}${tried.length > 4 ? ' …' : ''})`);
+  },
+
   async searchPlayers(query) {
-    const list = await MagicBrawl.fetchAllPlayers(false);
-    const q = String(query || '').trim().replace(/^#/, '').toLowerCase();
-    if (!q) return list.slice(0, 30);
-    return list.filter(p => {
+    const { list } = await MagicBrawl._search(query || '');
+    if (!query || !String(query).trim()) return list.slice(0, 30);
+    const q = String(query).trim().replace(/^#/, '').toLowerCase();
+    const filtered = list.filter(p => {
       const id = String(p.id ?? p.playerId ?? p._id ?? '').toLowerCase();
       const name = String(p.name ?? p.username ?? '').toLowerCase();
       return id.includes(q) || name.includes(q);
-    }).slice(0, 30);
+    });
+    return (filtered.length ? filtered : list).slice(0, 30);
   },
+
   async fetchPlayerById(id) {
-    const list = await MagicBrawl.fetchAllPlayers(true);
-    const found = list.find(p => String(p.id ?? p.playerId ?? p._id) === String(id));
-    if (!found) throw new Error('Spieler-ID nicht mehr in der Magic-Brawl-Liste gefunden');
+    const { list } = await MagicBrawl._search(String(id));
+    const found = list.find(p => String(p.id ?? p.playerId ?? p._id) === String(id)) || (list.length === 1 ? list[0] : null);
+    if (!found) throw new Error('Spieler-ID nicht mehr gefunden');
     return found;
   },
+
   async fetchData(game) {
-    if (!game.playerId) throw new Error('Kein Spieler ausgewählt — bitte über die Suche verknüpfen');
+    if (!game.playerId) throw new Error('Kein Spieler verknüpft');
     const p = await MagicBrawl.fetchPlayerById(game.playerId);
     const id = p.id ?? p.playerId ?? p._id;
     const name = p.name ?? p.username ?? '—';
@@ -695,6 +778,11 @@ function applyCards(cards) {
 // ---------- Spiele (Brawl Stars / Magic Brawl / eigene API) ----------
 
 async function checkGame(game) {
+  if (game.type === 'magicbrawl' && !game.playerId) {
+    game.status = 'Tippe auf die Karte, um einen Spieler zu verknüpfen';
+    game.error = null;
+    return game;
+  }
   try {
     let result;
     if (game.type === 'brawlstars') result = await BrawlStars.fetchPlayer(game);
@@ -709,6 +797,49 @@ async function checkGame(game) {
     game.lastChecked = new Date().toISOString();
   }
   return game;
+}
+
+function mountMagicBrawlSearch(container, onPick) {
+  container.innerHTML = `
+    <div class="mb-search-row">
+      <input type="text" placeholder="z. B. #4821 oder Spielername" id="mb-search-input" />
+      <button type="button" class="btn-ghost" id="mb-search-btn">Suchen</button>
+    </div>
+    <div class="mb-results" id="mb-search-results"></div>
+  `;
+  const input = container.querySelector('#mb-search-input');
+  const btn = container.querySelector('#mb-search-btn');
+  const results = container.querySelector('#mb-search-results');
+  const runSearch = async () => {
+    const q = input.value.trim();
+    btn.classList.add('is-loading');
+    btn.disabled = true;
+    results.innerHTML = '<div class="mb-loading">Suche…</div>';
+    try {
+      const list = await MagicBrawl.searchPlayers(q);
+      if (list.length === 0) { results.innerHTML = '<div class="mb-empty">Keine Spieler gefunden.</div>'; return; }
+      results.innerHTML = '';
+      list.forEach((p, i) => {
+        const id = p.id ?? p.playerId ?? p._id;
+        const name = p.name ?? p.username ?? 'Unbekannt';
+        const trophies = p.trophies ?? p.trophy ?? 0;
+        const row = document.createElement('button');
+        row.type = 'button';
+        row.className = 'mb-result-row';
+        row.style.setProperty('--i', i);
+        row.innerHTML = `<span class="mb-result-id">#${escapeHtml(String(id))}</span><span class="mb-result-name">${escapeHtml(String(name))}</span><span class="mb-result-trophies">🏆 ${Number(trophies).toLocaleString('de-DE')}</span>`;
+        row.addEventListener('click', () => onPick({ id, name, trophies }));
+        results.appendChild(row);
+      });
+    } catch (err) {
+      results.innerHTML = `<div class="mb-empty err">${escapeHtml(err.message || 'Suche fehlgeschlagen')}</div>`;
+    } finally {
+      btn.classList.remove('is-loading');
+      btn.disabled = false;
+    }
+  };
+  btn.addEventListener('click', runSearch);
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); runSearch(); } });
 }
 
 async function checkAllGames() {
@@ -769,6 +900,27 @@ function renderGameDetail() {
   document.getElementById('game-subtitle').textContent = game.lastChecked ? `Zuletzt geprüft ${relTime(game.lastChecked)}` : '';
   const statsEl = document.getElementById('game-stats');
   const errEl = document.getElementById('game-error');
+
+  if (game.type === 'magicbrawl' && !game.playerId) {
+    errEl.style.display = 'none';
+    statsEl.innerHTML = `
+      <p class="hint" style="margin-bottom:10px;">Noch kein Spieler verknüpft. Suche nach Name oder #ID und tippe ein Ergebnis an.</p>
+      <div id="game-mb-link"></div>
+    `;
+    mountMagicBrawlSearch(document.getElementById('game-mb-link'), async (p) => {
+      game.playerId = p.id;
+      game.playerName = p.name;
+      game.playerTrophies = p.trophies;
+      saveConfig(config);
+      renderGames();
+      await checkGame(game);
+      saveConfig(config);
+      renderGames();
+      renderGameDetail();
+    });
+    return;
+  }
+
   if (game.error) { errEl.textContent = game.error; errEl.style.display = 'block'; }
   else { errEl.style.display = 'none'; }
 
@@ -787,6 +939,7 @@ async function openGameDetail(id) {
   renderGameDetail();
   document.getElementById('game-overlay').classList.add('open');
   const game = config.games.find(g => g.id === id);
+  if (game && game.type === 'magicbrawl' && !game.playerId) return; // erst verknüpfen, dann prüfen
   const stale = !game.lastChecked || Date.now() - new Date(game.lastChecked).getTime() > 5 * 60 * 1000;
   if (game && stale) {
     await checkGame(game);
@@ -1207,20 +1360,11 @@ function renderGameFormStep(existingGame, presetKeyOverride) {
         <p class="hint">Key auf developer.brawlstars.com erstellen. Beim Proxy trägst du dort die feste IP <strong>45.79.218.79</strong> ein (statt deiner eigenen wechselnden Handy-IP) — dann funktioniert's zuverlässig.</p>
       </div>`;
   } else if (preset.type === 'magicbrawl') {
-    fieldsHtml += `
-      <div class="field">
-        <label>Spieler suchen (Name oder #ID)</label>
-        <div class="mb-search-row">
-          <input type="text" id="g-mb-query" placeholder="z. B. #4821 oder Spielername" />
-          <button type="button" class="btn-ghost" id="g-mb-search-btn">Suchen</button>
-        </div>
-        <div class="mb-results" id="g-mb-results"></div>
-        <p class="hint">Ergebnisse kommen von der Magic-Brawl-API (id, name, trophies). Tippe auf einen Spieler, um die Karte mit ihm zu verknüpfen.</p>
-      </div>
-      <div class="mb-selected" id="g-mb-selected" ${selectedMbPlayer ? '' : 'style="display:none"'}>
-        <span class="mb-selected-label">Verknüpft:</span>
-        <span id="g-mb-selected-text">${selectedMbPlayer ? `#${escapeHtml(String(selectedMbPlayer.id))} — ${escapeHtml(String(selectedMbPlayer.name || ''))} (${Number(selectedMbPlayer.trophies || 0).toLocaleString('de-DE')} 🏆)` : ''}</span>
-      </div>`;
+    if (!existingGame) {
+      fieldsHtml += `<p class="hint">Den Spieler verknüpfst du gleich danach — einfach auf die neue Karte tippen und suchen.</p>`;
+    } else {
+      fieldsHtml += `<div class="field"><label>Verknüpfter Spieler</label><div id="g-mb-linked"></div></div>`;
+    }
   } else {
     fieldsHtml += `
       <div class="field">
@@ -1270,55 +1414,31 @@ function renderGameFormStep(existingGame, presetKeyOverride) {
     iconLabelText.textContent = 'Icon wählen';
   });
 
-  // ---- Magic-Brawl-Suche verdrahten ----
-  if (preset.type === 'magicbrawl') {
-    const searchBtn = document.getElementById('g-mb-search-btn');
-    const queryInput = document.getElementById('g-mb-query');
-    const resultsEl = document.getElementById('g-mb-results');
-    const selectedWrap = document.getElementById('g-mb-selected');
-    const selectedText = document.getElementById('g-mb-selected-text');
-
-    const pickPlayer = (p) => {
-      selectedMbPlayer = {
-        id: p.id ?? p.playerId ?? p._id,
-        name: p.name ?? p.username ?? '—',
-        trophies: p.trophies ?? p.trophy ?? 0
-      };
-      selectedWrap.style.display = '';
-      selectedText.textContent = `#${selectedMbPlayer.id} — ${selectedMbPlayer.name} (${Number(selectedMbPlayer.trophies).toLocaleString('de-DE')} 🏆)`;
-      resultsEl.innerHTML = '';
-    };
-
-    const runSearch = async () => {
-      const q = queryInput.value.trim();
-      searchBtn.classList.add('is-loading');
-      searchBtn.disabled = true;
-      resultsEl.innerHTML = '<div class="mb-loading">Suche…</div>';
-      try {
-        const list = await MagicBrawl.searchPlayers(q);
-        if (list.length === 0) { resultsEl.innerHTML = '<div class="mb-empty">Keine Spieler gefunden.</div>'; return; }
-        resultsEl.innerHTML = '';
-        list.forEach((p, i) => {
-          const id = p.id ?? p.playerId ?? p._id;
-          const name = p.name ?? p.username ?? 'Unbekannt';
-          const trophies = p.trophies ?? p.trophy ?? 0;
-          const row = document.createElement('button');
-          row.type = 'button';
-          row.className = 'mb-result-row';
-          row.style.setProperty('--i', i);
-          row.innerHTML = `<span class="mb-result-id">#${escapeHtml(String(id))}</span><span class="mb-result-name">${escapeHtml(String(name))}</span><span class="mb-result-trophies">🏆 ${Number(trophies).toLocaleString('de-DE')}</span>`;
-          row.addEventListener('click', () => pickPlayer(p));
-          resultsEl.appendChild(row);
-        });
-      } catch (err) {
-        resultsEl.innerHTML = `<div class="mb-empty err">${escapeHtml(err.message || 'Suche fehlgeschlagen')}</div>`;
-      } finally {
-        searchBtn.classList.remove('is-loading');
-        searchBtn.disabled = false;
+  // ---- Magic-Brawl-Verknüpfung verdrahten (nur im Bearbeiten-Modus) ----
+  if (preset.type === 'magicbrawl' && existingGame) {
+    const linkedWrap = document.getElementById('g-mb-linked');
+    const showLinked = () => {
+      if (selectedMbPlayer) {
+        linkedWrap.innerHTML = `
+          <div class="mb-selected">
+            <span class="mb-selected-label">Verknüpft:</span>
+            <span>#${escapeHtml(String(selectedMbPlayer.id))} — ${escapeHtml(String(selectedMbPlayer.name || ''))} (${Number(selectedMbPlayer.trophies || 0).toLocaleString('de-DE')} 🏆)</span>
+          </div>
+          <button type="button" class="icon-remove-btn" id="g-mb-change" style="margin-top:6px;">Anderen Spieler suchen</button>
+        `;
+        document.getElementById('g-mb-change').addEventListener('click', showSearch);
+      } else {
+        showSearch();
       }
     };
-    searchBtn.addEventListener('click', runSearch);
-    queryInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); runSearch(); } });
+    const showSearch = () => {
+      linkedWrap.innerHTML = `<div id="g-mb-search-mount"></div>`;
+      mountMagicBrawlSearch(document.getElementById('g-mb-search-mount'), (p) => {
+        selectedMbPlayer = p;
+        showLinked();
+      });
+    };
+    showLinked();
   }
 
   document.getElementById('btn-cancel').addEventListener('click', closeModal);
@@ -1337,10 +1457,11 @@ function renderGameFormStep(existingGame, presetKeyOverride) {
       payload.playerTag = document.getElementById('g-playerTag').value.trim();
       payload.useProxy = document.getElementById('g-useProxy').value === '1';
     } else if (preset.type === 'magicbrawl') {
-      if (!selectedMbPlayer) { alert('Bitte zuerst über die Suche einen Spieler auswählen.'); return; }
-      payload.playerId = selectedMbPlayer.id;
-      payload.playerName = selectedMbPlayer.name;
-      payload.playerTrophies = selectedMbPlayer.trophies;
+      if (selectedMbPlayer) {
+        payload.playerId = selectedMbPlayer.id;
+        payload.playerName = selectedMbPlayer.name;
+        payload.playerTrophies = selectedMbPlayer.trophies;
+      }
     } else {
       payload.url = document.getElementById('g-url').value.trim();
       payload.authHeader = document.getElementById('g-authHeader').value.trim();
