@@ -1,0 +1,60 @@
+name: Build unsigned iOS IPA
+
+# Läuft automatisch bei jedem Push nach main, und lässt sich zusätzlich manuell
+# über den "Run workflow"-Button im Actions-Tab starten.
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: macos-14
+
+    steps:
+      - name: Repo auschecken
+        uses: actions/checkout@v4
+
+      - name: Node.js einrichten
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: NPM-Abhängigkeiten installieren
+        run: npm install
+
+      - name: Natives iOS-Projekt erzeugen
+        run: npx cap add ios
+
+      - name: Web-Assets ins iOS-Projekt kopieren
+        run: npx cap sync ios
+
+      - name: CocoaPods-Abhängigkeiten installieren
+        working-directory: ios/App
+        run: pod install
+
+      - name: Unsigniert bauen (Archive, ohne Apple-Zertifikat)
+        working-directory: ios/App
+        run: |
+          xcodebuild \
+            -workspace App.xcworkspace \
+            -scheme App \
+            -configuration Release \
+            -sdk iphoneos \
+            -archivePath "$PWD/build/App.xcarchive" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            archive
+
+      - name: In IPA verpacken
+        working-directory: ios/App/build
+        run: |
+          mkdir Payload
+          cp -r App.xcarchive/Products/Applications/App.app Payload/
+          zip -r AccountHub.ipa Payload
+
+      - name: IPA als Download-Artefakt bereitstellen
+        uses: actions/upload-artifact@v4
+        with:
+          name: AccountHub-ipa
+          path: ios/App/build/AccountHub.ipa
